@@ -9,7 +9,7 @@ intents.members = True
 
 bot = commands.Bot(command_prefix='^', intents=intents)
 
-OWNER_ID = "760643765953364019"
+OWNER_ID = 760643765953364019
 DATA_FILE = 'data.json'
 
 default_data = {
