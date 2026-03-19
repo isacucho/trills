@@ -274,24 +274,56 @@ async def instaban(interaction: discord.Interaction, channel: discord.TextChanne
         )
 
 
+async def uninstaban_channel_autocomplete(
+    interaction: discord.Interaction, current: str
+):
+    if interaction.guild is None:
+        return []
+
+    data = load_data()
+    current_lower = current.lower()
+    choices = []
+
+    for channel_id in data["ban_channels"]:
+        channel = interaction.guild.get_channel(int(channel_id))
+        if channel is None:
+            label = f"deleted-channel ({channel_id})"
+        else:
+            label = f"#{channel.name} ({channel_id})"
+
+        if current_lower and current_lower not in label.lower():
+            continue
+
+        choices.append(app_commands.Choice(name=label[:100], value=channel_id))
+        if len(choices) >= 25:
+            break
+
+    return choices
+
+
 @bot.tree.command(name="uninstaban", description="Disable instant ban in a channel")
-@app_commands.describe(channel="Channel to stop monitoring")
-async def uninstaban(interaction: discord.Interaction, channel: discord.TextChannel):
+@app_commands.describe(channel_id="Enabled channel to stop monitoring")
+@app_commands.autocomplete(channel_id=uninstaban_channel_autocomplete)
+async def uninstaban(interaction: discord.Interaction, channel_id: str):
     if not await ensure_guild_context(interaction):
         return
     data = load_data()
     if not has_access(interaction, data):
         return
-    if str(channel.id) in data["ban_channels"]:
-        data["ban_channels"].remove(str(channel.id))
+    if channel_id in data["ban_channels"]:
+        data["ban_channels"].remove(channel_id)
         save_data(data)
+        channel = interaction.guild.get_channel(int(channel_id))
+        channel_ref = channel.mention if channel else channel_id
         await respond(
-            interaction, f"disabled instant ban-on-type for channel {channel.mention}!"
+            interaction, f"disabled instant ban-on-type for channel {channel_ref}!"
         )
     else:
+        channel = interaction.guild.get_channel(int(channel_id)) if channel_id.isdigit() else None
+        channel_ref = channel.mention if channel else channel_id
         await respond(
             interaction,
-            f"the channel {channel.mention} doesn't even have instant ban-on-type enabled LOL",
+            f"the channel {channel_ref} doesn't even have instant ban-on-type enabled LOL",
         )
 
 
