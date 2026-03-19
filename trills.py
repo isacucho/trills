@@ -2,7 +2,9 @@ import json
 import os
 
 import discord
+from discord import app_commands
 from discord.ext import commands
+from dotenv import load_dotenv
 
 
 intents = discord.Intents.default()
@@ -12,6 +14,7 @@ intents.members = True
 bot = commands.Bot(command_prefix="^", intents=intents)
 
 DATA_FILE = "data.json"
+COMMANDS_SYNCED = False
 
 
 def new_default_data():
@@ -47,60 +50,76 @@ def save_data(data):
         json.dump(normalize_data(data), f, indent=4)
 
 
-def is_guild_owner(ctx):
-    return ctx.guild is not None and ctx.author.id == ctx.guild.owner_id
-
-
-def has_discord_admin(ctx):
-    return ctx.guild is not None and ctx.author.guild_permissions.administrator
-
-
-def has_access(ctx, data):
+def is_guild_owner(interaction):
     return (
-        is_guild_owner(ctx)
-        or has_discord_admin(ctx)
-        or str(ctx.author.id) in data["allowed_users"]
+        interaction.guild is not None
+        and interaction.user.id == interaction.guild.owner_id
     )
 
 
-def has_admin_power(ctx, data):
-    user_id = str(ctx.author.id)
-    return is_guild_owner(ctx) or has_discord_admin(ctx) or (
+def has_discord_admin(interaction):
+    member = interaction.user
+    return (
+        interaction.guild is not None
+        and isinstance(member, discord.Member)
+        and member.guild_permissions.administrator
+    )
+
+
+def has_access(interaction, data):
+    return (
+        is_guild_owner(interaction)
+        or has_discord_admin(interaction)
+        or str(interaction.user.id) in data["allowed_users"]
+    )
+
+
+def has_admin_power(interaction, data):
+    user_id = str(interaction.user.id)
+    return is_guild_owner(interaction) or has_discord_admin(interaction) or (
         user_id in data["allowed_users"] and user_id in data["protected_ids"]
     )
 
 
-def is_protected_user(ctx, user_id, data):
+def is_protected_user(interaction, user_id, data):
     return (
-        ctx.guild is not None and user_id == ctx.guild.owner_id
+        interaction.guild is not None and user_id == interaction.guild.owner_id
     ) or str(user_id) in data["protected_ids"]
 
 
-async def ensure_guild_context(ctx):
-    if ctx.guild is None:
-        await ctx.send("this command can only be used in a server.")
+async def respond(interaction, message):
+    if interaction.response.is_done():
+        await interaction.followup.send(message)
+    else:
+        await interaction.response.send_message(message)
+
+
+async def ensure_guild_context(interaction):
+    if interaction.guild is None:
+        await respond(interaction, "this command can only be used in a server.")
         return False
     return True
 
 
 @bot.event
 async def on_ready():
+    global COMMANDS_SYNCED
     print(f"{bot.user} is ready")
     await bot.change_presence(
         activity=discord.Activity(
             type=discord.ActivityType.watching,
-            name="sending scammers to a far away land rn // ^about for help",
+            name="sending scammers to a far away land rn // /about for help",
         )
     )
+    if not COMMANDS_SYNCED:
+        synced = await bot.tree.sync()
+        COMMANDS_SYNCED = True
+        print(f"synced {len(synced)} slash commands")
 
 
 @bot.event
 async def on_message(message):
-    if message.author.bot:
-        return
-
-    if message.guild is None:
-        await bot.process_commands(message)
+    if message.author.bot or message.guild is None:
         return
 
     data = load_data()
@@ -110,7 +129,7 @@ async def on_message(message):
             message.author.id == message.guild.owner_id
             or str(message.author.id) in data["protected_ids"]
         ):
-            return await bot.process_commands(message)
+            return
 
         try:
             await message.author.ban(
@@ -123,246 +142,258 @@ async def on_message(message):
                 save_data(data)
         except Exception:
             pass
-        return
-
-    await bot.process_commands(message)
 
 
-@bot.command()
-async def add(ctx, user_id: int):
-    if not await ensure_guild_context(ctx):
+@bot.tree.command(name="add", description="Add a user to protected list")
+@app_commands.describe(user_id="User ID to protect")
+async def add(interaction: discord.Interaction, user_id: int):
+    if not await ensure_guild_context(interaction):
         return
     data = load_data()
-    if not has_admin_power(ctx, data):
+    if not has_admin_power(interaction, data):
         return
     if str(user_id) not in data["protected_ids"]:
         data["protected_ids"].append(str(user_id))
         save_data(data)
-        await ctx.send(f"added {user_id} to protected list!")
+        await respond(interaction, f"added {user_id} to protected list!")
     else:
-        await ctx.send(f"{user_id} is already protected LOL")
+        await respond(interaction, f"{user_id} is already protected LOL")
 
 
-@bot.command()
-async def remove(ctx, user_id: int):
-    if not await ensure_guild_context(ctx):
+@bot.tree.command(name="remove", description="Remove a user from protected list")
+@app_commands.describe(user_id="User ID to unprotect")
+async def remove(interaction: discord.Interaction, user_id: int):
+    if not await ensure_guild_context(interaction):
         return
     data = load_data()
-    if not has_admin_power(ctx, data):
+    if not has_admin_power(interaction, data):
         return
-    if user_id == ctx.author.id:
-        return await ctx.send("you can't unprotect yourself!")
-    if user_id == ctx.guild.owner_id:
-        return await ctx.send("error: could not remove {user_id}")
+    if user_id == interaction.user.id:
+        return await respond(interaction, "you can't unprotect yourself!")
+    if user_id == interaction.guild.owner_id:
+        return await respond(interaction, f"error: could not remove {user_id}")
     if str(user_id) in data["protected_ids"]:
         data["protected_ids"].remove(str(user_id))
         save_data(data)
-        await ctx.send(f"removed {user_id} from protected list!")
+        await respond(interaction, f"removed {user_id} from protected list!")
     else:
-        await ctx.send(f"{user_id} isn't even in the protected list!")
+        await respond(interaction, f"{user_id} isn't even in the protected list!")
 
 
-@bot.command()
-async def toggle(ctx, user_id: int):
-    if not await ensure_guild_context(ctx):
+@bot.tree.command(name="toggle", description="Toggle a user's protected status")
+@app_commands.describe(user_id="User ID to toggle protection for")
+async def toggle(interaction: discord.Interaction, user_id: int):
+    if not await ensure_guild_context(interaction):
         return
     data = load_data()
-    if not has_admin_power(ctx, data):
+    if not has_admin_power(interaction, data):
         return
-    if user_id == ctx.guild.owner_id:
-        return await ctx.send("error: could not toggle {user_id}")
+    if user_id == interaction.guild.owner_id:
+        return await respond(interaction, f"error: could not toggle {user_id}")
     if str(user_id) in data["protected_ids"]:
         data["protected_ids"].remove(str(user_id))
-        await ctx.send(f"removed {user_id} from protected list!")
+        await respond(interaction, f"removed {user_id} from protected list!")
     else:
         data["protected_ids"].append(str(user_id))
-        await ctx.send(f"added {user_id} to protected list!")
+        await respond(interaction, f"added {user_id} to protected list!")
     save_data(data)
 
 
-@bot.command()
-async def ban(ctx, user_id: int):
-    if not await ensure_guild_context(ctx):
+@bot.tree.command(name="ban", description="Ban a user by user ID")
+@app_commands.describe(user_id="User ID to ban")
+async def ban(interaction: discord.Interaction, user_id: int):
+    if not await ensure_guild_context(interaction):
         return
     data = load_data()
-    if not has_access(ctx, data):
+    if not has_access(interaction, data):
         return
-    if user_id == ctx.author.id:
-        return await ctx.send("you can't ban yourself!")
-    if is_protected_user(ctx, user_id, data):
-        return await ctx.send("can't ban a protected user LOL")
+    if user_id == interaction.user.id:
+        return await respond(interaction, "you can't ban yourself!")
+    if is_protected_user(interaction, user_id, data):
+        return await respond(interaction, "can't ban a protected user LOL")
     try:
         user = await bot.fetch_user(user_id)
-        await ctx.guild.ban(user, reason="manually banned")
+        await interaction.guild.ban(user, reason="manually banned")
         if str(user_id) not in data["banned_users"]:
             data["banned_users"].append(str(user_id))
             save_data(data)
-        await ctx.send(f"successfully banned {user_id}!")
+        await respond(interaction, f"successfully banned {user_id}!")
     except Exception:
-        await ctx.send("error: failed to ban user")
+        await respond(interaction, "error: failed to ban user")
 
 
-@bot.command()
-async def unban(ctx, user_id: int):
-    if not await ensure_guild_context(ctx):
+@bot.tree.command(name="unban", description="Unban a user by user ID")
+@app_commands.describe(user_id="User ID to unban")
+async def unban(interaction: discord.Interaction, user_id: int):
+    if not await ensure_guild_context(interaction):
         return
     data = load_data()
-    if not has_access(ctx, data):
+    if not has_access(interaction, data):
         return
     try:
         user = await bot.fetch_user(user_id)
-        await ctx.guild.unban(user)
+        await interaction.guild.unban(user)
         if str(user_id) in data["banned_users"]:
             data["banned_users"].remove(str(user_id))
             save_data(data)
-        await ctx.send(f"successfully unbanned {user_id}!")
+        await respond(interaction, f"successfully unbanned {user_id}!")
     except Exception:
-        await ctx.send("error: failed to unban user")
+        await respond(interaction, "error: failed to unban user")
 
 
-@bot.command()
-async def kick(ctx, user_id: int):
-    if not await ensure_guild_context(ctx):
+@bot.tree.command(name="kick", description="Kick a user by user ID")
+@app_commands.describe(user_id="User ID to kick")
+async def kick(interaction: discord.Interaction, user_id: int):
+    if not await ensure_guild_context(interaction):
         return
     data = load_data()
-    if not has_access(ctx, data):
+    if not has_access(interaction, data):
         return
-    if user_id == ctx.author.id:
-        return await ctx.send("you can't kick yourself!")
-    if is_protected_user(ctx, user_id, data):
-        return await ctx.send("can't kick a protected user LOL")
+    if user_id == interaction.user.id:
+        return await respond(interaction, "you can't kick yourself!")
+    if is_protected_user(interaction, user_id, data):
+        return await respond(interaction, "can't kick a protected user LOL")
     try:
-        member = ctx.guild.get_member(user_id)
+        member = interaction.guild.get_member(user_id)
         if member is None:
-            return await ctx.send("user not found in this server!")
+            return await respond(interaction, "user not found in this server!")
         await member.kick(reason="manually kicked")
-        await ctx.send(f"successfully kicked {user_id}!")
+        await respond(interaction, f"successfully kicked {user_id}!")
     except Exception:
-        await ctx.send("error: failed to kick user")
+        await respond(interaction, "error: failed to kick user")
 
 
-@bot.command()
-async def instaban(ctx, channel_id: int):
-    if not await ensure_guild_context(ctx):
+@bot.tree.command(name="instaban", description="Enable instant ban in a channel")
+@app_commands.describe(channel_id="Channel ID to monitor")
+async def instaban(interaction: discord.Interaction, channel_id: int):
+    if not await ensure_guild_context(interaction):
         return
     data = load_data()
-    if not has_access(ctx, data):
+    if not has_access(interaction, data):
         return
     if str(channel_id) not in data["ban_channels"]:
         data["ban_channels"].append(str(channel_id))
         save_data(data)
-        await ctx.send(f"enabled instant ban-on-type for channel {channel_id}!")
+        await respond(interaction, f"enabled instant ban-on-type for channel {channel_id}!")
     else:
-        await ctx.send(
-            f"the channel {channel_id} already has instant ban-on-type enabled!"
+        await respond(
+            interaction,
+            f"the channel {channel_id} already has instant ban-on-type enabled!",
         )
 
 
-@bot.command()
-async def uninstaban(ctx, channel_id: int):
-    if not await ensure_guild_context(ctx):
+@bot.tree.command(name="uninstaban", description="Disable instant ban in a channel")
+@app_commands.describe(channel_id="Channel ID to stop monitoring")
+async def uninstaban(interaction: discord.Interaction, channel_id: int):
+    if not await ensure_guild_context(interaction):
         return
     data = load_data()
-    if not has_access(ctx, data):
+    if not has_access(interaction, data):
         return
     if str(channel_id) in data["ban_channels"]:
         data["ban_channels"].remove(str(channel_id))
         save_data(data)
-        await ctx.send(f"disabled instant ban-on-type for channel {channel_id}!")
+        await respond(interaction, f"disabled instant ban-on-type for channel {channel_id}!")
     else:
-        await ctx.send(
-            f"the channel {channel_id} doesn't even have instant ban-on-type enabled LOL"
+        await respond(
+            interaction,
+            f"the channel {channel_id} doesn't even have instant ban-on-type enabled LOL",
         )
 
 
-@bot.command()
-async def access(ctx, user_id: int):
-    if not await ensure_guild_context(ctx):
+@bot.tree.command(name="access", description="Grant command access to a user ID")
+@app_commands.describe(user_id="User ID to grant access")
+async def access(interaction: discord.Interaction, user_id: int):
+    if not await ensure_guild_context(interaction):
         return
     data = load_data()
-    if not has_admin_power(ctx, data):
+    if not has_admin_power(interaction, data):
         return
     if str(user_id) not in data["allowed_users"]:
         data["allowed_users"].append(str(user_id))
         save_data(data)
-        await ctx.send(f"granted access to {user_id}! they can now use my commands :P")
+        await respond(
+            interaction, f"granted access to {user_id}! they can now use my commands :P"
+        )
     else:
-        await ctx.send(f"{user_id} already has access to my commands!")
+        await respond(interaction, f"{user_id} already has access to my commands!")
 
 
-@bot.command()
-async def revoke(ctx, user_id: int):
-    if not await ensure_guild_context(ctx):
+@bot.tree.command(name="revoke", description="Revoke command access from a user ID")
+@app_commands.describe(user_id="User ID to revoke access from")
+async def revoke(interaction: discord.Interaction, user_id: int):
+    if not await ensure_guild_context(interaction):
         return
     data = load_data()
-    if not has_admin_power(ctx, data):
+    if not has_admin_power(interaction, data):
         return
-    if user_id == ctx.author.id:
-        return await ctx.send("you can't revoke your own access!")
-    if user_id == ctx.guild.owner_id:
-        return await ctx.send("error: could not remove owner's access")
+    if user_id == interaction.user.id:
+        return await respond(interaction, "you can't revoke your own access!")
+    if user_id == interaction.guild.owner_id:
+        return await respond(interaction, "error: could not remove owner's access")
     if str(user_id) in data["allowed_users"]:
         data["allowed_users"].remove(str(user_id))
         save_data(data)
-        await ctx.send(f"revoked {user_id}'s access!")
+        await respond(interaction, f"revoked {user_id}'s access!")
     else:
-        await ctx.send(f"{user_id} doesn't even have access!")
+        await respond(interaction, f"{user_id} doesn't even have access!")
 
 
-@bot.command()
-async def echo(ctx, *, message):
+@bot.tree.command(name="echo", description="Make the bot repeat your message")
+@app_commands.describe(message="Message to echo")
+async def echo(interaction: discord.Interaction, message: str):
     data = load_data()
-    if not has_access(ctx, data):
+    if not has_access(interaction, data):
         return
-    await ctx.send(message)
+    await respond(interaction, message)
 
 
-@bot.command()
-async def listprotected(ctx):
+@bot.tree.command(name="listprotected", description="List all protected user IDs")
+async def listprotected(interaction: discord.Interaction):
     data = load_data()
-    if not has_access(ctx, data):
+    if not has_access(interaction, data):
         return
     protected = ", ".join(data["protected_ids"]) if data["protected_ids"] else "None"
-    await ctx.send(f"protected user IDs: {protected}")
+    await respond(interaction, f"protected user IDs: {protected}")
 
 
-@bot.command()
-async def listchannels(ctx):
+@bot.tree.command(name="listchannels", description="List all instant-ban channels")
+async def listchannels(interaction: discord.Interaction):
     data = load_data()
-    if not has_access(ctx, data):
+    if not has_access(interaction, data):
         return
     channels = ", ".join(data["ban_channels"]) if data["ban_channels"] else "None"
-    await ctx.send(f"ban-on-type channels: {channels}")
+    await respond(interaction, f"ban-on-type channels: {channels}")
 
 
-@bot.command()
-async def listaccess(ctx):
+@bot.tree.command(name="listaccess", description="List all users with command access")
+async def listaccess(interaction: discord.Interaction):
     data = load_data()
-    if not has_access(ctx, data):
+    if not has_access(interaction, data):
         return
     access_list = ", ".join(data["allowed_users"]) if data["allowed_users"] else "None"
-    await ctx.send(f"allowed users: {access_list}")
+    await respond(interaction, f"allowed users: {access_list}")
 
 
-@bot.command()
-async def about(ctx):
+@bot.tree.command(name="about", description="Show help and command information")
+async def about(interaction: discord.Interaction):
     help_text = """
 *hey! i'm Trills, a multi-use bot made to protect servers from being bothered by dirty scammers, here are a few of my commands:*
-`^add <user_id>` - add a user to protected list, not letting me ban them
-`^remove <user_id>` - remove a user from protected list, enabling me to ban them
-`^toggle <user_id>` - toggles a user's protected status
-`^ban <user_id>` - manually ban a user
-`^unban <user_id>` - unban a user
-`^kick <user_id>` - kick a user
-`^instaban <channel_id>` - enable instant ban on message sent in a channel
-`^uninstaban <channel_id>` - disable instant ban on message sent in a channel
-`^access <user_id>` - give a user the ability to use my commands
-`^revoke <user_id>` - take away a user's command access
-`^echo <message>` - make me echo anything you type
-`^listprotected` - lists all protected user IDs
-`^listchannels` - lists all channels that instantly ban when a message is sent
-`^listaccess` - lists all users with command access
-`^about` - shows this message!
+`/add <user_id>` - add a user to protected list, not letting me ban them
+`/remove <user_id>` - remove a user from protected list, enabling me to ban them
+`/toggle <user_id>` - toggles a user's protected status
+`/ban <user_id>` - manually ban a user
+`/unban <user_id>` - unban a user
+`/kick <user_id>` - kick a user
+`/instaban <channel_id>` - enable instant ban on message sent in a channel
+`/uninstaban <channel_id>` - disable instant ban on message sent in a channel
+`/access <user_id>` - give a user the ability to use my commands
+`/revoke <user_id>` - take away a user's command access
+`/echo <message>` - make me echo anything you type
+`/listprotected` - lists all protected user IDs
+`/listchannels` - lists all channels that instantly ban when a message is sent
+`/listaccess` - lists all users with command access
+`/about` - shows this message!
 
 **Notes:**
 - only users with access can use commands
@@ -371,21 +402,19 @@ async def about(ctx):
 - typing in instant-ban channels results in an *immediate* ban (unless protected)
 - non-owners need both protection AND access to grant/revoke others protection/access
 """
-    await ctx.send(help_text)
+    await respond(interaction, help_text)
 
 
-@bot.command()
-async def cleardata(ctx):
-    if not await ensure_guild_context(ctx):
+@bot.tree.command(name="cleardata", description="Reset all bot data to defaults")
+async def cleardata(interaction: discord.Interaction):
+    if not await ensure_guild_context(interaction):
         return
-    if not is_guild_owner(ctx):
+    if not is_guild_owner(interaction):
         return
     with open(DATA_FILE, "w") as f:
         json.dump(new_default_data(), f, indent=4)
-    await ctx.send("reset all data to default!")
+    await respond(interaction, "reset all data to default!")
 
-
-from dotenv import load_dotenv
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_BOT_TOKEN")
