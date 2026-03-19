@@ -22,7 +22,6 @@ def new_default_data():
         "protected_ids": [],
         "ban_channels": [],
         "allowed_users": [],
-        "banned_users": [],
     }
 
 
@@ -137,9 +136,6 @@ async def on_message(message):
                 delete_message_days=0,
             )
             await message.delete()
-            if str(message.author.id) not in data["banned_users"]:
-                data["banned_users"].append(str(message.author.id))
-                save_data(data)
         except Exception:
             pass
 
@@ -214,9 +210,6 @@ async def ban(interaction: discord.Interaction, user_id: int):
     try:
         user = await bot.fetch_user(user_id)
         await interaction.guild.ban(user, reason="manually banned")
-        if str(user_id) not in data["banned_users"]:
-            data["banned_users"].append(str(user_id))
-            save_data(data)
         await respond(interaction, f"successfully banned {user_id}!")
     except Exception:
         await respond(interaction, "error: failed to ban user")
@@ -233,9 +226,6 @@ async def unban(interaction: discord.Interaction, user_id: int):
     try:
         user = await bot.fetch_user(user_id)
         await interaction.guild.unban(user)
-        if str(user_id) in data["banned_users"]:
-            data["banned_users"].remove(str(user_id))
-            save_data(data)
         await respond(interaction, f"successfully unbanned {user_id}!")
     except Exception:
         await respond(interaction, "error: failed to unban user")
