@@ -254,40 +254,44 @@ async def kick(interaction: discord.Interaction, user_id: int):
 
 
 @bot.tree.command(name="instaban", description="Enable instant ban in a channel")
-@app_commands.describe(channel_id="Channel ID to monitor")
-async def instaban(interaction: discord.Interaction, channel_id: int):
+@app_commands.describe(channel="Channel to monitor")
+async def instaban(interaction: discord.Interaction, channel: discord.TextChannel):
     if not await ensure_guild_context(interaction):
         return
     data = load_data()
     if not has_access(interaction, data):
         return
-    if str(channel_id) not in data["ban_channels"]:
-        data["ban_channels"].append(str(channel_id))
+    if str(channel.id) not in data["ban_channels"]:
+        data["ban_channels"].append(str(channel.id))
         save_data(data)
-        await respond(interaction, f"enabled instant ban-on-type for channel {channel_id}!")
+        await respond(
+            interaction, f"enabled instant ban-on-type for channel {channel.mention}!"
+        )
     else:
         await respond(
             interaction,
-            f"the channel {channel_id} already has instant ban-on-type enabled!",
+            f"the channel {channel.mention} already has instant ban-on-type enabled!",
         )
 
 
 @bot.tree.command(name="uninstaban", description="Disable instant ban in a channel")
-@app_commands.describe(channel_id="Channel ID to stop monitoring")
-async def uninstaban(interaction: discord.Interaction, channel_id: int):
+@app_commands.describe(channel="Channel to stop monitoring")
+async def uninstaban(interaction: discord.Interaction, channel: discord.TextChannel):
     if not await ensure_guild_context(interaction):
         return
     data = load_data()
     if not has_access(interaction, data):
         return
-    if str(channel_id) in data["ban_channels"]:
-        data["ban_channels"].remove(str(channel_id))
+    if str(channel.id) in data["ban_channels"]:
+        data["ban_channels"].remove(str(channel.id))
         save_data(data)
-        await respond(interaction, f"disabled instant ban-on-type for channel {channel_id}!")
+        await respond(
+            interaction, f"disabled instant ban-on-type for channel {channel.mention}!"
+        )
     else:
         await respond(
             interaction,
-            f"the channel {channel_id} doesn't even have instant ban-on-type enabled LOL",
+            f"the channel {channel.mention} doesn't even have instant ban-on-type enabled LOL",
         )
 
 
@@ -365,6 +369,30 @@ async def listaccess(interaction: discord.Interaction):
     await respond(interaction, f"allowed users: {access_list}")
 
 
+@bot.tree.command(name="listbans", description="List currently banned users in this server")
+async def listbans(interaction: discord.Interaction):
+    if not await ensure_guild_context(interaction):
+        return
+    data = load_data()
+    if not has_access(interaction, data):
+        return
+    try:
+        entries = [entry async for entry in interaction.guild.bans(limit=100)]
+    except Exception:
+        return await respond(interaction, "error: failed to fetch server ban list")
+
+    if not entries:
+        return await respond(interaction, "no users are currently banned in this server.")
+
+    lines = [f"{entry.user} ({entry.user.id})" for entry in entries]
+    header = f"server bans ({len(entries)} shown):\n"
+    body = "\n".join(lines)
+    message = f"{header}{body}"
+    if len(message) > 1900:
+        message = f"{header}" + "\n".join(lines[:40])
+    await respond(interaction, message)
+
+
 @bot.tree.command(name="about", description="Show help and command information")
 async def about(interaction: discord.Interaction):
     help_text = """
@@ -375,14 +403,15 @@ async def about(interaction: discord.Interaction):
 `/ban <user_id>` - manually ban a user
 `/unban <user_id>` - unban a user
 `/kick <user_id>` - kick a user
-`/instaban <channel_id>` - enable instant ban on message sent in a channel
-`/uninstaban <channel_id>` - disable instant ban on message sent in a channel
+`/instaban <channel>` - enable instant ban on message sent in a channel
+`/uninstaban <channel>` - disable instant ban on message sent in a channel
 `/access <user_id>` - give a user the ability to use my commands
 `/revoke <user_id>` - take away a user's command access
 `/echo <message>` - make me echo anything you type
 `/listprotected` - lists all protected user IDs
 `/listchannels` - lists all channels that instantly ban when a message is sent
 `/listaccess` - lists all users with command access
+`/listbans` - lists currently banned users in this server
 `/about` - shows this message!
 
 **Notes:**
